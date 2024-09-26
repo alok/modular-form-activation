@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+# %%
 from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
@@ -15,6 +17,9 @@ from jaxtyping import Float
 import einops
 
 import unittest
+import math
+
+from torch import vmap  # Import vmap from torch.func
 
 
 @dataclass
@@ -25,60 +30,210 @@ class Config:
     learning_rate: float = 0.001
 
 
-@dataclass
-class DedekindEtaConfig:
-    """
-    Configuration for the DedekindEta module.
-
-    Args:
-        num_terms (int): Number of Fourier terms to include in the approximation.
-    """
-    num_terms: int = 10
-
-
 class DedekindEta(nn.Module):
     """
-    PyTorch module to compute the Dedekind Eta function using truncated Fourier series with complex exponentials.
+    PyTorch module to compute the Dedekind Eta function using Euler's formula.
+
+    For any complex number τ with Im(τ) > 0, the Dedekind Eta function is defined as:
+    η(τ) = ∑_{n=-∞}^{∞} e^{πi n} e^{3πi (n + 1⁄6)² τ}.
 
     Args:
-        config (DedekindEtaConfig): Configuration for the number of Fourier terms.
+        config (Config): Configuration for the number of Fourier terms.
     """
-    def __init__(self, config: DedekindEtaConfig) -> None:
-        super(DedekindEta, self).__init__()
-        self.num_terms = config.num_terms
-        # Initialize complex Fourier coefficients
-        self.coeffs = nn.Parameter(torch.randn(self.num_terms, dtype=torch.cfloat) * 0.1)
 
-    def forward(self, z: Float[torch.Tensor, "batch features"]) -> Float[torch.Tensor, "batch features"]:
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        self.config = config
+        n_terms = 2 * self.config.num_terms + 1
+        self.register_buffer(
+            "n",
+            torch.arange(
+                -self.config.num_terms,
+                self.config.num_terms + 1,
+                dtype=torch.float32,
+            )
+        )
+        self.register_buffer(
+            "exponent_base",
+            3 * math.pi * 1j * (self.n + 1 / 6) ** 2,  # Shape: [1, 1, n_terms]
+        )
+        self.register_buffer(
+            "e_pi_i_n", torch.exp(1j * math.pi * self.n)  # Shape: [1, 1, n_terms]
+        )
+
+    def eta_single(self, tau: Float[torch.Tensor, "features"]) -> Float[torch.Tensor, "features"]:
         """
-        Forward pass to compute the Dedekind Eta function using complex exponentials.
+        Compute Dedekind Eta for a single tau.
 
         Args:
-            z (torch.Tensor): Input tensor.
+            tau (torch.Tensor): Single input tensor with Im(tau) > 0.
 
         Returns:
-            torch.Tensor: Computed Dedekind Eta values.
+            torch.Tensor: Computed Dedekind Eta value.
         """
-        n = torch.arange(1, self.num_terms + 1, device=z.device, dtype=torch.float32).unsqueeze(0)  # Shape: [1, num_terms]
-        exponent = 1j * n * z.unsqueeze(1)  # Shape: [batch, num_terms]
-        y = self.coeffs.unsqueeze(0) * torch.exp(exponent)  # Shape: [batch, num_terms]
-        return y.sum(dim=1).real  # Returning the real part
+        if not torch.is_complex(tau):
+            tau = tau.to(torch.cfloat)
+
+        exponent_tau = self.exponent_base * tau.unsqueeze(-1)  # [features, n_terms]
+        total_terms = self.e_pi_i_n * torch.exp(exponent_tau)  # [features, n_terms]
+        eta = total_terms.sum(dim=-1)  # Sum over n_terms dimension
+
+        return eta
+
+    def forward(
+        self, tau: Float[torch.Tensor, "batch features"]
+    ) -> Float[torch.Tensor, "batch features"]:
+        """
+        Forward pass to compute the Dedekind Eta function using Euler's formula.
+
+        Args:
+            tau (torch.Tensor): Input tensor with shape [batch, features] and Im(tau) > 0.
+                               It should be a complex tensor (dtype=torch.cfloat).
+
+        Returns:
+            torch.Tensor: Computed Dedekind Eta values with shape [batch, features].
+        """
+        return vmap(self.eta_single)(tau)
 
 
+class DedekindEtaSpecialValues(nn.Module):
+    """
+    PyTorch module to compute special values of the Dedekind Eta function.
+    """
+
+    def __init__(self):
+        super().__init__()
+
+    def eta_i(self):
+        return math.gamma(1 / 4) / (2 * math.pi ** (3 / 4))
+
+    def eta_half_i(self):
+        return math.gamma(1 / 4) / (2 ** (7 / 8) * math.pi ** (3 / 4))
+
+    def eta_2i(self):
+        return math.gamma(1 / 4) / (2 ** (11 / 8) * math.pi ** (3 / 4))
+
+    def eta_3i(self):
+        return math.gamma(1 / 4) / (
+            2
+            * 3 ** (1 / 3)
+            * (3 + 2 * torch.sqrt(torch.tensor(3.0))) ** (1 / 12)
+            * math.pi ** (3 / 4)
+        )
+
+    def eta_4i(self):
+        return ((-1 + torch.sqrt(torch.tensor(2.0))) ** (1 / 4) * math.gamma(1 / 4)) / (
+            2 ** (29 / 16) * math.pi ** (3 / 4)
+        )
+
+    def eta_e_2pi_i_3(self):
+        return (
+            torch.exp(torch.tensor(-math.pi * 1j / 24))
+            * (3 ** (1 / 8) * math.gamma(1 / 3) ** (3 / 2))
+            / (2 * math.pi)
+        )
+
+    def eta_single_value(self, _):
+        """
+        Returns a single special value, ignoring input.
+
+        Args:
+            _: Dummy input.
+
+        Returns:
+            torch.Tensor: A single special value.
+        """
+        value = self.eta_i()
+        return torch.tensor(value)
+
+    def forward(self, tau: torch.Tensor):
+        """
+        Forward pass to compute special values of the Dedekind Eta function.
+
+        Args:
+            tau (torch.Tensor): Input tensor with special values [i, 0.5i, 2i, 3i, 4i, e^(2πi/3)].
+                                 (Batch size is irrelevant here as special values are fixed.)
+
+        Returns:
+            torch.Tensor: Computed special Dedekind Eta values.
+        """
+        special_values = torch.tensor(
+            [
+                self.eta_i(),
+                self.eta_half_i(),
+                self.eta_2i(),
+                self.eta_3i(),
+                self.eta_4i(),
+                self.eta_e_2pi_i_3(),
+            ]
+        )
+        return special_values
+
+
+def test_dedekind_eta():
+    config = Config(num_terms=1000)  # Large number of terms for accuracy
+    dedekind_eta = DedekindEta(config).eval()
+    special_values_module = DedekindEtaSpecialValues()
+
+    # Test inputs
+    tau = torch.tensor(
+        [1j, 0.5j, 2j, 3j, 4j, torch.exp(torch.tensor(2j * math.pi / 3))]
+    )
+
+    # Compute values using DedekindEta
+    computed_values = dedekind_eta(tau)
+
+    # Compute special values
+    expected_values = special_values_module(tau)
+    print(f"{expected_values = }")
+    print(f"{computed_values = }")
+    # Compare results
+    torch.testing.assert_close(computed_values, expected_values, rtol=1e-4, atol=1e-4)
+    print("DedekindEta implementation matches special values within tolerance.")
+
+
+# Run the test
+test_dedekind_eta()
+
+
+# %%
 class JInvariant(nn.Module):
     """
     PyTorch module to compute the j-invariant using complex exponentials.
 
     Args:
-        config (DedekindEtaConfig): Configuration for the number of Fourier terms.
+        config (Config): Configuration for the number of Fourier terms.
     """
-    def __init__(self, config: DedekindEtaConfig) -> None:
-        super(JInvariant, self).__init__()
-        self.num_terms = config.num_terms
-        # Initialize complex Fourier coefficients for j-invariant
-        self.coeffs = nn.Parameter(torch.randn(self.num_terms, dtype=torch.cfloat) * 0.1)
 
-    def forward(self, z: Float[torch.Tensor, "batch features"]) -> Float[torch.Tensor, "batch features"]:
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        self.config = config
+        self.num_terms = self.config.num_terms
+        # Initialize complex Fourier coefficients
+        self.coeffs = nn.Parameter(
+            torch.randn(self.num_terms, dtype=torch.cfloat) * 0.1
+        )
+        self.n = torch.arange(
+            1, self.num_terms + 1, dtype=torch.float32
+        ).reshape(1, -1)  # Shape: [1, num_terms]
+
+    def j_invariant_single(self, z: torch.Tensor) -> torch.Tensor:
+        """
+        Compute j-invariant for a single z.
+
+        Args:
+            z (torch.Tensor): Single input tensor.
+
+        Returns:
+            torch.Tensor: Computed j-invariant value.
+        """
+        exponent = 2j * self.n * z  # [1, num_terms]
+        y = self.coeffs * torch.exp(exponent)  # [num_terms]
+        return y.sum().real  # Returning the real part
+
+    def forward(
+        self, z: Float[torch.Tensor, "features"]
+    ) -> Float[torch.Tensor, "features"]:
         """
         Forward pass to compute the j-invariant using complex exponentials.
 
@@ -88,10 +243,7 @@ class JInvariant(nn.Module):
         Returns:
             torch.Tensor: Computed j-invariant values.
         """
-        n = torch.arange(1, self.num_terms + 1, device=z.device, dtype=torch.float32).unsqueeze(0)  # Shape: [1, num_terms]
-        exponent = 2j * n * z.unsqueeze(1)  # Example multiplier for j-invariant
-        y = self.coeffs.unsqueeze(0) * torch.exp(exponent)  # Shape: [batch, num_terms]
-        return y.sum(dim=1).real  # Returning the real part
+        return vmap(self.j_invariant_single)(z)
 
 
 # Define the ModularFormActivation using truncated Fourier series with complex exponentials
@@ -102,13 +254,35 @@ class ModularFormActivation(nn.Module):
     Args:
         config (Config): Configuration for the number of Fourier terms.
     """
+
     def __init__(self, config: Config) -> None:
         super(ModularFormActivation, self).__init__()
         self.num_terms = config.num_terms
         # Initialize complex Fourier coefficients
-        self.coeffs = nn.Parameter(torch.randn(config.num_terms, dtype=torch.cfloat) * 0.1)
+        self.coeffs = nn.Parameter(
+            torch.randn(self.num_terms, dtype=torch.cfloat) * 0.1
+        )
+        self.n = torch.arange(
+            1, self.num_terms + 1, dtype=torch.float32
+        ).reshape(1, -1)  # Shape: [1, num_terms]
 
-    def forward(self, x: Float[torch.Tensor, "batch features"]) -> Float[torch.Tensor, "batch features"]:
+    def activation_single(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute activation for a single input x.
+
+        Args:
+            x (torch.Tensor): Single input tensor.
+
+        Returns:
+            torch.Tensor: Activated value.
+        """
+        exponent = 1j * self.n * x  # [1, num_terms]
+        y = self.coeffs * torch.exp(exponent)  # [num_terms]
+        return y.sum().real  # Returning the real part
+
+    def forward(
+        self, x: Float[torch.Tensor, "batch features"]
+    ) -> Float[torch.Tensor, "batch features"]:
         """
         Forward pass of the activation function using complex exponentials.
 
@@ -118,10 +292,7 @@ class ModularFormActivation(nn.Module):
         Returns:
             torch.Tensor: Activated tensor.
         """
-        n = torch.arange(1, self.num_terms + 1, device=x.device, dtype=torch.float32).unsqueeze(0)  # Shape: [1, num_terms]
-        exponent = 1j * n * x.unsqueeze(1)  # Shape: [batch, num_terms]
-        y = self.coeffs.unsqueeze(0) * torch.exp(exponent)  # Shape: [batch, num_terms]
-        return y.sum(dim=1).real  # Returning the real part
+        return vmap(self.activation_single)(x)
 
 
 # Inline tests for ModularFormActivation and DedekindEta
@@ -133,24 +304,38 @@ class TestModularFormActivation(unittest.TestCase):
         self.assertEqual(output.shape, (10, 20))
 
     def test_dedekind_eta_known_value(self):
-        config = DedekindEtaConfig(num_terms=1)
+        config = Config(num_terms=1)
         dedekind_eta = DedekindEta(config=config)
         input_z = torch.tensor([0.0], dtype=torch.float32)
         output = dedekind_eta(input_z)
-        expected = dedekind_eta.coeffs[0].real + dedekind_eta.coeffs[0].imag  # Since exp(0) = 1 + 0j
-        self.assertAlmostEqual(output.item(), (dedekind_eta.coeffs[0] * torch.exp(1j * 1 * input_z)).real.item(), places=5)
+        expected = (
+            dedekind_eta.coeffs[0].real + dedekind_eta.coeffs[0].imag
+        )  # Since exp(0) = 1 + 0j
+        self.assertAlmostEqual(
+            output.item(),
+            (dedekind_eta.coeffs[0] * torch.exp(1j * 1 * input_z)).real.item(),
+            places=5,
+        )
 
     def test_j_invariant_known_value(self):
-        config = DedekindEtaConfig(num_terms=1)
+        config = Config(num_terms=1)
         j_invariant = JInvariant(config=config)
         input_z = torch.tensor([0.0], dtype=torch.float32)
         output = j_invariant(input_z)
-        expected = j_invariant.coeffs[0].real + j_invariant.coeffs[0].imag  # Simplified for n=1 and z=0
-        self.assertAlmostEqual(output.item(), (j_invariant.coeffs[0] * torch.exp(2j * 1 * input_z)).real.item(), places=5)
+        expected = (
+            j_invariant.coeffs[0].real + j_invariant.coeffs[0].imag
+        )  # Simplified for n=1 and z=0
+        self.assertAlmostEqual(
+            output.item(),
+            (j_invariant.coeffs[0] * torch.exp(2j * 1 * input_z)).real.item(),
+            places=5,
+        )
 
 
 # Visualization of the activation function
-def plot_activation(activation_fn: Callable[[torch.Tensor], torch.Tensor], title: str) -> None:
+def plot_activation(
+    activation_fn: Callable[[torch.Tensor], torch.Tensor], title: str
+) -> None:
     """
     Plots the activation function over a range of inputs.
 
@@ -162,7 +347,7 @@ def plot_activation(activation_fn: Callable[[torch.Tensor], torch.Tensor], title
     with torch.no_grad():
         y = activation_fn(x)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=x.numpy(), y=y.numpy(), mode='lines', name=title))
+    fig.add_trace(go.Scatter(x=x.numpy(), y=y.numpy(), mode="lines", name=title))
     fig.update_layout(title=title, xaxis_title="Input", yaxis_title="Output")
     fig.show()
 
@@ -175,6 +360,7 @@ class FeedforwardNetwork(nn.Module):
     Args:
         activation (nn.Module): Activation function to use.
     """
+
     def __init__(self, activation: nn.Module) -> None:
         super(FeedforwardNetwork, self).__init__()
         self.flatten = nn.Flatten()
@@ -184,7 +370,9 @@ class FeedforwardNetwork(nn.Module):
         self.act2 = activation
         self.fc3 = nn.Linear(64, 10)
 
-    def forward(self, x: Float[torch.Tensor, "batch 1 28 28"]) -> Float[torch.Tensor, "batch 10"]:
+    def forward(
+        self, x: Float[torch.Tensor, "batch 1 28 28"]
+    ) -> Float[torch.Tensor, "batch 10"]:
         x = self.flatten(x)
         x = self.act1(self.fc1(x))
         x = self.act2(self.fc2(x))
@@ -193,7 +381,13 @@ class FeedforwardNetwork(nn.Module):
 
 
 # Training function
-def train_model(model: nn.Module, device: torch.device, train_loader: DataLoader, optimizer: optim.Optimizer, criterion: nn.Module) -> Tuple[list, list]:
+def train_model(
+    model: nn.Module,
+    device: torch.device,
+    train_loader: DataLoader,
+    optimizer: optim.Optimizer,
+    criterion: nn.Module,
+) -> Tuple[list, list]:
     """
     Trains the model for one epoch.
 
@@ -228,7 +422,12 @@ def train_model(model: nn.Module, device: torch.device, train_loader: DataLoader
 
 
 # Evaluation function
-def evaluate_model(model: nn.Module, device: torch.device, test_loader: DataLoader, criterion: nn.Module) -> Tuple[list, list]:
+def evaluate_model(
+    model: nn.Module,
+    device: torch.device,
+    test_loader: DataLoader,
+    criterion: nn.Module,
+) -> Tuple[list, list]:
     """
     Evaluates the model on the test dataset.
 
@@ -267,12 +466,13 @@ def compare_activations() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # MNIST dataset
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-    ])
-    train_dataset = datasets.MNIST(root='./data', train=True, transform=transform, download=True)
-    test_dataset = datasets.MNIST(root='./data', train=False, transform=transform)
+    transform = transforms.Compose(
+        [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
+    )
+    train_dataset = datasets.MNIST(
+        root="./data", train=True, transform=transform, download=True
+    )
+    test_dataset = datasets.MNIST(root="./data", train=False, transform=transform)
 
     train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=1000, shuffle=False)
@@ -280,8 +480,8 @@ def compare_activations() -> None:
     # Initialize activations
     config = Config(num_terms=10)
     modular_activation = ModularFormActivation(config=config).to(device)
-    dedekind_eta = DedekindEta(config=DedekindEtaConfig(num_terms=10)).to(device)
-    j_invariant = JInvariant(config=DedekindEtaConfig(num_terms=10)).to(device)
+    dedekind_eta = DedekindEta(config=config).to(device)
+    j_invariant = JInvariant(config=config).to(device)
     gelu_activation = nn.GELU().to(device)
 
     # Initialize models
@@ -301,42 +501,120 @@ def compare_activations() -> None:
     history = defaultdict(list)
 
     for epoch in range(epochs):
-        loss_m, acc_m = train_model(model_modular, device, train_loader, optimizer_modular, criterion)
-        loss_d, acc_d = train_model(model_dedekind, device, train_loader, optimizer_dedekind, criterion)
-        loss_j, acc_j = train_model(model_j, device, train_loader, optimizer_j, criterion)
-        loss_g, acc_g = train_model(model_gelu, device, train_loader, optimizer_gelu, criterion)
+        loss_m, acc_m = train_model(
+            model_modular, device, train_loader, optimizer_modular, criterion
+        )
+        loss_d, acc_d = train_model(
+            model_dedekind, device, train_loader, optimizer_dedekind, criterion
+        )
+        loss_j, acc_j = train_model(
+            model_j, device, train_loader, optimizer_j, criterion
+        )
+        loss_g, acc_g = train_model(
+            model_gelu, device, train_loader, optimizer_gelu, criterion
+        )
 
-        history['modular_loss'].append(np.mean(loss_m))
-        history['modular_acc'].append(np.mean(acc_m))
-        history['dedekind_loss'].append(np.mean(loss_d))
-        history['dedekind_acc'].append(np.mean(acc_d))
-        history['j_invariant_loss'].append(np.mean(loss_j))
-        history['j_invariant_acc'].append(np.mean(acc_j))
-        history['gelu_loss'].append(np.mean(loss_g))
-        history['gelu_acc'].append(np.mean(acc_g))
+        history["modular_loss"].append(np.mean(loss_m))
+        history["modular_acc"].append(np.mean(acc_m))
+        history["dedekind_loss"].append(np.mean(loss_d))
+        history["dedekind_acc"].append(np.mean(acc_d))
+        history["j_invariant_loss"].append(np.mean(loss_j))
+        history["j_invariant_acc"].append(np.mean(acc_j))
+        history["gelu_loss"].append(np.mean(loss_g))
+        history["gelu_acc"].append(np.mean(acc_g))
 
         print(f"Epoch {epoch+1}/{epochs}")
-        print(f"Modular Activation - Loss: {history['modular_loss'][-1]:.4f}, Accuracy: {history['modular_acc'][-1]*100:.2f}%")
-        print(f"Dedekind Eta - Loss: {history['dedekind_loss'][-1]:.4f}, Accuracy: {history['dedekind_acc'][-1]*100:.2f}%")
-        print(f"J-Invariant - Loss: {history['j_invariant_loss'][-1]:.4f}, Accuracy: {history['j_invariant_acc'][-1]*100:.2f}%")
-        print(f"GELU Activation - Loss: {history['gelu_loss'][-1]:.4f}, Accuracy: {history['gelu_acc'][-1]*100:.2f}%")
+        print(
+            f"Modular Activation - Loss: {history['modular_loss'][-1]:.4f}, Accuracy: {history['modular_acc'][-1]*100:.2f}%"
+        )
+        print(
+            f"Dedekind Eta - Loss: {history['dedekind_loss'][-1]:.4f}, Accuracy: {history['dedekind_acc'][-1]*100:.2f}%"
+        )
+        print(
+            f"J-Invariant - Loss: {history['j_invariant_loss'][-1]:.4f}, Accuracy: {history['j_invariant_acc'][-1]*100:.2f}%"
+        )
+        print(
+            f"GELU Activation - Loss: {history['gelu_loss'][-1]:.4f}, Accuracy: {history['gelu_acc'][-1]*100:.2f}%"
+        )
 
     # Plot training loss
     fig_loss = go.Figure()
-    fig_loss.add_trace(go.Scatter(x=list(range(1, epochs+1)), y=history['modular_loss'], mode='lines+markers', name='Modular Activation'))
-    fig_loss.add_trace(go.Scatter(x=list(range(1, epochs+1)), y=history['dedekind_loss'], mode='lines+markers', name='Dedekind Eta'))
-    fig_loss.add_trace(go.Scatter(x=list(range(1, epochs+1)), y=history['j_invariant_loss'], mode='lines+markers', name='J-Invariant'))
-    fig_loss.add_trace(go.Scatter(x=list(range(1, epochs+1)), y=history['gelu_loss'], mode='lines+markers', name='GELU Activation'))
-    fig_loss.update_layout(title='Training Loss Comparison', xaxis_title='Epoch', yaxis_title='Loss')
+    fig_loss.add_trace(
+        go.Scatter(
+            x=list(range(1, epochs + 1)),
+            y=history["modular_loss"],
+            mode="lines+markers",
+            name="Modular Activation",
+        )
+    )
+    fig_loss.add_trace(
+        go.Scatter(
+            x=list(range(1, epochs + 1)),
+            y=history["dedekind_loss"],
+            mode="lines+markers",
+            name="Dedekind Eta",
+        )
+    )
+    fig_loss.add_trace(
+        go.Scatter(
+            x=list(range(1, epochs + 1)),
+            y=history["j_invariant_loss"],
+            mode="lines+markers",
+            name="J-Invariant",
+        )
+    )
+    fig_loss.add_trace(
+        go.Scatter(
+            x=list(range(1, epochs + 1)),
+            y=history["gelu_loss"],
+            mode="lines+markers",
+            name="GELU Activation",
+        )
+    )
+    fig_loss.update_layout(
+        title="Training Loss Comparison", xaxis_title="Epoch", yaxis_title="Loss"
+    )
     fig_loss.show()
 
     # Plot training accuracy
     fig_acc = go.Figure()
-    fig_acc.add_trace(go.Scatter(x=list(range(1, epochs+1)), y=[acc * 100 for acc in history['modular_acc']], mode='lines+markers', name='Modular Activation'))
-    fig_acc.add_trace(go.Scatter(x=list(range(1, epochs+1)), y=[acc * 100 for acc in history['dedekind_acc']], mode='lines+markers', name='Dedekind Eta'))
-    fig_acc.add_trace(go.Scatter(x=list(range(1, epochs+1)), y=[acc * 100 for acc in history['j_invariant_acc']], mode='lines+markers', name='J-Invariant'))
-    fig_acc.add_trace(go.Scatter(x=list(range(1, epochs+1)), y=[acc * 100 for acc in history['gelu_acc']], mode='lines+markers', name='GELU Activation'))
-    fig_acc.update_layout(title='Training Accuracy Comparison', xaxis_title='Epoch', yaxis_title='Accuracy (%)')
+    fig_acc.add_trace(
+        go.Scatter(
+            x=list(range(1, epochs + 1)),
+            y=[acc * 100 for acc in history["modular_acc"]],
+            mode="lines+markers",
+            name="Modular Activation",
+        )
+    )
+    fig_acc.add_trace(
+        go.Scatter(
+            x=list(range(1, epochs + 1)),
+            y=[acc * 100 for acc in history["dedekind_acc"]],
+            mode="lines+markers",
+            name="Dedekind Eta",
+        )
+    )
+    fig_acc.add_trace(
+        go.Scatter(
+            x=list(range(1, epochs + 1)),
+            y=[acc * 100 for acc in history["j_invariant_acc"]],
+            mode="lines+markers",
+            name="J-Invariant",
+        )
+    )
+    fig_acc.add_trace(
+        go.Scatter(
+            x=list(range(1, epochs + 1)),
+            y=[acc * 100 for acc in history["gelu_acc"]],
+            mode="lines+markers",
+            name="GELU Activation",
+        )
+    )
+    fig_acc.update_layout(
+        title="Training Accuracy Comparison",
+        xaxis_title="Epoch",
+        yaxis_title="Accuracy (%)",
+    )
     fig_acc.show()
 
     # Plot activation functions
@@ -351,22 +629,29 @@ def run_tests() -> None:
     """
     Runs all unit tests.
     """
-    unittest.main(argv=[''], verbosity=2, exit=False)
+    unittest.main(argv=[""], verbosity=2, exit=False)
 
 
 # Execute when running the script
-plot_activation(ModularFormActivation(config=Config(num_terms=10)), "Modular Form Activation")
-plot_activation(DedekindEta(config=DedekindEtaConfig(num_terms=10)), "Dedekind Eta Activation")
-plot_activation(JInvariant(config=DedekindEtaConfig(num_terms=10)), "J-Invariant Activation")
+plot_activation(
+    ModularFormActivation(config=Config(num_terms=10)), "Modular Form Activation"
+)
+plot_activation(
+    DedekindEta(config=Config(num_terms=10)), "Dedekind Eta Activation"
+)
+plot_activation(
+    JInvariant(config=Config(num_terms=10)), "J-Invariant Activation"
+)
 plot_activation(nn.GELU(), "GELU Activation")
 run_tests()
 compare_activations()
 
 
-
-def main():
-    ...
+def main(): ...
 
 
 if __name__ == "__main__":
     main()
+
+
+# %%
