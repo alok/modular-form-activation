@@ -44,7 +44,6 @@ class DedekindEta(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.config = config
-        n_terms = 2 * self.config.num_terms + 1
         self.register_buffer(
             "n",
             torch.arange(
@@ -58,7 +57,7 @@ class DedekindEta(nn.Module):
             3 * math.pi * 1j * (self.n + 1 / 6) ** 2,  # Shape: [1, 1, n_terms]
         )
         self.register_buffer(
-            "e_pi_i_n", torch.exp(1j * math.pi * self.n)  # Shape: [1, 1, n_terms]
+            "root_of_unity", torch.exp(1j * math.pi * self.n)  # Shape: [1, 1, n_terms]
         )
 
     def eta_single(self, tau: Float[torch.Tensor, "features"]) -> Float[torch.Tensor, "features"]:
@@ -75,7 +74,7 @@ class DedekindEta(nn.Module):
             tau = tau.to(torch.cfloat)
 
         exponent_tau = self.exponent_base * tau.unsqueeze(-1)  # [features, n_terms]
-        total_terms = self.e_pi_i_n * torch.exp(exponent_tau)  # [features, n_terms]
+        total_terms = self.root_of_unity * torch.exp(exponent_tau)  # [features, n_terms]
         eta = total_terms.sum(dim=-1)  # Sum over n_terms dimension
 
         return eta
@@ -199,7 +198,10 @@ test_dedekind_eta()
 # %%
 class JInvariant(nn.Module):
     """
-    PyTorch module to compute the j-invariant using complex exponentials.
+    PyTorch module to compute the j-invariant using the Dedekind Eta function.
+
+    The j-invariant is computed using the formula:
+    j(τ) = ((η(2τ)/η(τ))^8 + 2^8 * (η(τ)/η(2τ))^16)^3
 
     Args:
         config (Config): Configuration for the number of Fourier terms.
@@ -208,43 +210,25 @@ class JInvariant(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.config = config
-        self.num_terms = self.config.num_terms
-        # Initialize complex Fourier coefficients
-        self.coeffs = nn.Parameter(
-            torch.randn(self.num_terms, dtype=torch.cfloat) * 0.1
-        )
-        self.n = torch.arange(
-            1, self.num_terms + 1, dtype=torch.float32
-        ).reshape(1, -1)  # Shape: [1, num_terms]
 
-    def j_invariant_single(self, z: torch.Tensor) -> torch.Tensor:
-        """
-        Compute j-invariant for a single z.
 
-        Args:
-            z (torch.Tensor): Single input tensor.
-
-        Returns:
-            torch.Tensor: Computed j-invariant value.
-        """
-        exponent = 2j * self.n * z  # [1, num_terms]
-        y = self.coeffs * torch.exp(exponent)  # [num_terms]
-        return y.sum().real  # Returning the real part
 
     def forward(
-        self, z: Float[torch.Tensor, "features"]
+        self, tau: Float[torch.Tensor, "features"]
     ) -> Float[torch.Tensor, "features"]:
-        """
-        Forward pass to compute the j-invariant using complex exponentials.
+        η = DedekindEta(self.config)
+        eta_tau = η(tau)
+        eta_2tau = η(2 * tau)
+        
+        ratio1 = (eta_2tau / eta_tau) ** 8
+        ratio2 = (eta_tau / eta_2tau) ** 16
+        
+        j = (ratio1 + 256 * ratio2) ** 3
+        return j
 
-        Args:
-            z (torch.Tensor): Input tensor.
 
-        Returns:
-            torch.Tensor: Computed j-invariant values.
-        """
-        return vmap(self.j_invariant_single)(z)
-
+j = JInvariant(config=Config(num_terms=100))
+j(1+math.sqrt(163))
 
 # Define the ModularFormActivation using truncated Fourier series with complex exponentials
 class ModularFormActivation(nn.Module):
