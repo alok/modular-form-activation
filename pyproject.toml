@@ -18,6 +18,10 @@ dependencies = [
     "torch>=2.4.1",
     "torchvision>=0.19.1",
     "plotly>=5.24.1",
+    "ipykernel>=6.29.5",
+    "nbformat>=5.10.4",
+    "notebook>=7.2.2",
+    "jupyter>=1.1.1",
 ]
 readme = "README.md"
 requires-python = ">= 3.8"
