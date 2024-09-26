@@ -8,3 +8,4 @@ wheels/
 
 # venv
 .venv
+src/modular_form_activation/data/
