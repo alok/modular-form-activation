@@ -1,8 +1,10 @@
 #! /usr/bin/env python3
 # %%
 from __future__ import annotations
+import cmath
 from collections import defaultdict
 from dataclasses import dataclass
+from numbers import Number
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -30,6 +32,11 @@ class Config:
     learning_rate: float = 0.001
 
 
+
+def root_of_unity(n: Number) -> torch.Tensor:
+    n = torch.tensor(n,dtype=torch.cfloat)
+    return torch.exp(1j * 2*math.pi * n)
+
 class DedekindEta(nn.Module):
     """
     PyTorch module to compute the Dedekind Eta function using Euler's formula.
@@ -41,7 +48,7 @@ class DedekindEta(nn.Module):
         config (Config): Configuration for the number of Fourier terms.
     """
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config=Config(num_terms=100)) -> None:
         super().__init__()
         self.config = config
         self.register_buffer(
@@ -60,28 +67,9 @@ class DedekindEta(nn.Module):
             "root_of_unity", torch.exp(1j * math.pi * self.n)  # Shape: [1, 1, n_terms]
         )
 
-    def eta_single(self, tau: Float[torch.Tensor, "features"]) -> Float[torch.Tensor, "features"]:
-        """
-        Compute Dedekind Eta for a single tau.
-
-        Args:
-            tau (torch.Tensor): Single input tensor with Im(tau) > 0.
-
-        Returns:
-            torch.Tensor: Computed Dedekind Eta value.
-        """
-        if not torch.is_complex(tau):
-            tau = tau.to(torch.cfloat)
-
-        exponent_tau = self.exponent_base * tau.unsqueeze(-1)  # [features, n_terms]
-        total_terms = self.root_of_unity * torch.exp(exponent_tau)  # [features, n_terms]
-        eta = total_terms.sum(dim=-1)  # Sum over n_terms dimension
-
-        return eta
-
     def forward(
-        self, tau: Float[torch.Tensor, "batch features"]
-    ) -> Float[torch.Tensor, "batch features"]:
+        self, tau: Float[torch.Tensor, ""] | Number
+    ) -> Float[torch.Tensor, ""]:
         """
         Forward pass to compute the Dedekind Eta function using Euler's formula.
 
@@ -92,7 +80,16 @@ class DedekindEta(nn.Module):
         Returns:
             torch.Tensor: Computed Dedekind Eta values with shape [batch, features].
         """
-        return vmap(self.eta_single)(tau)
+        if isinstance(tau, Number):
+            tau = torch.tensor(tau,dtype=torch.cfloat)
+        if not torch.is_complex(tau):
+            tau = tau.to(torch.cfloat)
+
+        exponent_tau = self.exponent_base * tau.unsqueeze(-1)  # [features, n_terms]
+        total_terms = self.root_of_unity * torch.exp(exponent_tau)  # [features, n_terms]
+        eta = total_terms.sum(dim=-1)  # Sum over n_terms dimension
+
+        return eta
 
 
 class DedekindEtaSpecialValues(nn.Module):
@@ -228,8 +225,8 @@ class JInvariant(nn.Module):
 
 
 j = JInvariant(config=Config(num_terms=100))
-j(1+math.sqrt(163))
-
+j((1+cmath.sqrt(-163))/2)
+assert j(1j) == 12**3
 # Define the ModularFormActivation using truncated Fourier series with complex exponentials
 class ModularFormActivation(nn.Module):
     """
