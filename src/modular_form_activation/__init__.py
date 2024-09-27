@@ -197,9 +197,6 @@ class JInvariant(nn.Module):
     """
     PyTorch module to compute the j-invariant using the Dedekind Eta function.
 
-    The j-invariant is computed using the formula:
-    j(τ) = ((η(2τ)/η(τ))^8 + 2^8 * (η(τ)/η(2τ))^16)^3
-
     Args:
         config (Config): Configuration for the number of Fourier terms.
     """
@@ -208,25 +205,22 @@ class JInvariant(nn.Module):
         super().__init__()
         self.config = config
 
-
-
     def forward(
-        self, tau: Float[torch.Tensor, "features"]
-    ) -> Float[torch.Tensor, "features"]:
+        self, tau: Float[torch.Tensor, ""] | Number
+    ) -> Float[torch.Tensor, ""]:
+        if isinstance(tau, Number):
+            tau = torch.tensor(tau,dtype=torch.cfloat)
         η = DedekindEta(self.config)
-        eta_tau = η(tau)
-        eta_2tau = η(2 * tau)
         
-        ratio1 = (eta_2tau / eta_tau) ** 8
-        ratio2 = (eta_tau / eta_2tau) ** 16
-        
-        j = (ratio1 + 256 * ratio2) ** 3
-        return j
 
+
+def j(a,b):
+    """simple j-invariant of elliptic curve $y^2 = x^3 + ax + b$"""
+    return 2**8*3**3*a**3/(4*a**3+27*b**2)
 
 j = JInvariant(config=Config(num_terms=100))
 j((1+cmath.sqrt(-163))/2)
-assert j(1j) == 12**3
+assert j(1j) == 12**3, j(1j)
 # Define the ModularFormActivation using truncated Fourier series with complex exponentials
 class ModularFormActivation(nn.Module):
     """
