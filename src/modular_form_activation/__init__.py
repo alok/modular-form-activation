@@ -32,10 +32,10 @@ class Config:
     learning_rate: float = 0.001
 
 
-
 def root_of_unity(n: Number) -> torch.Tensor:
-    n = torch.tensor(n,dtype=torch.cfloat)
-    return torch.exp(1j * 2*math.pi * n)
+    n = torch.tensor(n, dtype=torch.cfloat)
+    return torch.exp(1j * math.pi * n)
+
 
 class DedekindEta(nn.Module):
     """
@@ -48,7 +48,7 @@ class DedekindEta(nn.Module):
         config (Config): Configuration for the number of Fourier terms.
     """
 
-    def __init__(self, config: Config=Config(num_terms=100)) -> None:
+    def __init__(self, config: Config = Config(num_terms=100)) -> None:
         super().__init__()
         self.config = config
         self.register_buffer(
@@ -57,19 +57,17 @@ class DedekindEta(nn.Module):
                 -self.config.num_terms,
                 self.config.num_terms + 1,
                 dtype=torch.float32,
-            )
+            ),
         )
         self.register_buffer(
             "exponent_base",
             3 * math.pi * 1j * (self.n + 1 / 6) ** 2,  # Shape: [1, 1, n_terms]
         )
         self.register_buffer(
-            "root_of_unity", torch.exp(1j * math.pi * self.n)  # Shape: [1, 1, n_terms]
+            "root_of_unity", root_of_unity(self.n)  # Shape: [1, 1, n_terms]
         )
 
-    def forward(
-        self, tau: Float[torch.Tensor, ""] | Number
-    ) -> Float[torch.Tensor, ""]:
+    def forward(self, tau: Float[torch.Tensor, ""] | Number) -> Float[torch.Tensor, ""]:
         """
         Forward pass to compute the Dedekind Eta function using Euler's formula.
 
@@ -81,12 +79,14 @@ class DedekindEta(nn.Module):
             torch.Tensor: Computed Dedekind Eta values with shape [batch, features].
         """
         if isinstance(tau, Number):
-            tau = torch.tensor(tau,dtype=torch.cfloat)
+            tau = torch.tensor(tau, dtype=torch.cfloat)
         if not torch.is_complex(tau):
             tau = tau.to(torch.cfloat)
 
         exponent_tau = self.exponent_base * tau.unsqueeze(-1)  # [features, n_terms]
-        total_terms = self.root_of_unity * torch.exp(exponent_tau)  # [features, n_terms]
+        total_terms = self.root_of_unity * torch.exp(
+            exponent_tau
+        )  # [features, n_terms]
         eta = total_terms.sum(dim=-1)  # Sum over n_terms dimension
 
         return eta
@@ -129,18 +129,6 @@ class DedekindEtaSpecialValues(nn.Module):
             / (2 * math.pi)
         )
 
-    def eta_single_value(self, _):
-        """
-        Returns a single special value, ignoring input.
-
-        Args:
-            _: Dummy input.
-
-        Returns:
-            torch.Tensor: A single special value.
-        """
-        value = self.eta_i()
-        return torch.tensor(value)
 
     def forward(self, tau: torch.Tensor):
         """
@@ -176,7 +164,6 @@ def test_dedekind_eta():
         [1j, 0.5j, 2j, 3j, 4j, torch.exp(torch.tensor(2j * math.pi / 3))]
     )
 
-    # Compute values using DedekindEta
     computed_values = dedekind_eta(tau)
 
     # Compute special values
@@ -205,22 +192,22 @@ class JInvariant(nn.Module):
         super().__init__()
         self.config = config
 
-    def forward(
-        self, tau: Float[torch.Tensor, ""] | Number
-    ) -> Float[torch.Tensor, ""]:
+    def forward(self, tau: Float[torch.Tensor, ""] | Number) -> Float[torch.Tensor, ""]:
         if isinstance(tau, Number):
-            tau = torch.tensor(tau,dtype=torch.cfloat)
+            tau = torch.tensor(tau, dtype=torch.cfloat)
         η = DedekindEta(self.config)
-        
 
 
-def j(a,b):
+def j(a, b):
     """simple j-invariant of elliptic curve $y^2 = x^3 + ax + b$"""
-    return 2**8*3**3*a**3/(4*a**3+27*b**2)
+    return 2**8 * 3**3 * a**3 / (4 * a**3 + 27 * b**2)
+
 
 j = JInvariant(config=Config(num_terms=100))
-j((1+cmath.sqrt(-163))/2)
+j((1 + cmath.sqrt(-163)) / 2)
 assert j(1j) == 12**3, j(1j)
+
+
 # Define the ModularFormActivation using truncated Fourier series with complex exponentials
 class ModularFormActivation(nn.Module):
     """
@@ -237,9 +224,9 @@ class ModularFormActivation(nn.Module):
         self.coeffs = nn.Parameter(
             torch.randn(self.num_terms, dtype=torch.cfloat) * 0.1
         )
-        self.n = torch.arange(
-            1, self.num_terms + 1, dtype=torch.float32
-        ).reshape(1, -1)  # Shape: [1, num_terms]
+        self.n = torch.arange(1, self.num_terms + 1, dtype=torch.float32).reshape(
+            1, -1
+        )  # Shape: [1, num_terms]
 
     def activation_single(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -611,12 +598,8 @@ def run_tests() -> None:
 plot_activation(
     ModularFormActivation(config=Config(num_terms=10)), "Modular Form Activation"
 )
-plot_activation(
-    DedekindEta(config=Config(num_terms=10)), "Dedekind Eta Activation"
-)
-plot_activation(
-    JInvariant(config=Config(num_terms=10)), "J-Invariant Activation"
-)
+plot_activation(DedekindEta(config=Config(num_terms=10)), "Dedekind Eta Activation")
+plot_activation(JInvariant(config=Config(num_terms=10)), "J-Invariant Activation")
 plot_activation(nn.GELU(), "GELU Activation")
 run_tests()
 compare_activations()
