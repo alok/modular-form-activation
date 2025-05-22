@@ -1,0 +1,2 @@
+goal: implement modular form/automorphic forms as activation functions in pytorch. use pytorch's native complex number support as much as feasible.
+
